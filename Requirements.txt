@@ -19,3 +19,10 @@ google-cloud-speech==2.20.0
 
 # Logging and utilities
 python-dateutil==2.8.2
+
+streamlit
+SpeechRecognition
+openai
+python-dotenv
+numpy
+streamlit-mic-recorder
