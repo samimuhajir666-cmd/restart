@@ -1,10 +1,12 @@
-"""
-Microphone Testing Utility
-Test your microphone and audio settings before running the speech agent.
-"""
-
-import speech_recognition as sr
+import os
+import sys
+import io
+import time
 import numpy as np
+from collections import deque
+from dotenv import load_dotenv
+import speech_recognition as sr
+from openai import OpenAI
 import logging
 
 # Configure logging
@@ -14,242 +16,288 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Load environment variables
+load_dotenv()
 
-def test_microphone_detection():
-    """Test if any microphones are detected."""
-    logger.info("=" * 60)
-    logger.info("🎤 MICROPHONE DETECTION TEST")
-    logger.info("=" * 60 + "\n")
+class WhisperSpeechAgent:
+    """
+    Advanced speech-to-text AI agent using OpenAI's Whisper API.
+    Superior accuracy with multiple language support and noise robustness.
+    """
     
-    try:
-        mic_list = sr.Microphone.list_microphone_indexes()
+    def __init__(self):
+        # Initialize OpenAI client
+        api_key = os.getenv('OPENAI_API_KEY')
+        if not api_key:
+            raise ValueError("❌ OPENAI_API_KEY not found in .env file")
         
-        if not mic_list:
-            logger.warning("❌ No microphones detected!")
-            logger.info("Please check your audio device connections.")
-            return False
+        self.client = OpenAI(api_key=api_key)
         
-        logger.info("✅ Microphones detected:\n")
-        for index in mic_list:
-            try:
-                mic = sr.Microphone(device_index=index)
-                logger.info(f"   [{index}] {sr.Microphone().get_pyaudio_instance().get_device_info_by_index(index)['name']}")
-            except Exception as e:
-                logger.info(f"   [{index}] Microphone (couldn't get name: {e})")
+        # Initialize speech recognition
+        self.recognizer = sr.Recognizer()
+        self.microphone = sr.Microphone()
         
-        return True
+        # Audio level thresholds (dB)
+        self.silence_threshold = float(os.getenv('SILENCE_THRESHOLD', '30'))
+        self.loud_threshold = float(os.getenv('LOUD_THRESHOLD', '70'))
+        self.noise_threshold = float(os.getenv('NOISE_THRESHOLD', '40'))
+        
+        # Adaptive noise detection
+        self.noise_buffer = deque(maxlen=10)
+        self.is_listening = False
+        self.should_exit = False
+        self.transcribed_text = []
+        self.confidence_scores = []
+        
+        # Configuration
+        self.language = os.getenv('LANGUAGE', 'en')
+        self.model = os.getenv('WHISPER_MODEL', 'base')  # tiny, base, small, medium, large
+        
+        # Speech recognition settings
+        self.recognizer.energy_threshold = float(os.getenv('ENERGY_THRESHOLD', '4000'))
+        self.recognizer.dynamic_energy_threshold = True
+        
+        logger.info("🤖 Whisper Speech Agent initialized")
+        logger.info(f"Model: {self.model} | Language: {self.language}")
+        logger.info(f"Silence threshold: {self.silence_threshold} dB")
+        logger.info(f"Loud threshold: {self.loud_threshold} dB")
+        logger.info(f"Noise threshold: {self.noise_threshold} dB\n")
     
-    except Exception as e:
-        logger.error(f"❌ Error detecting microphones: {e}")
-        return False
-
-
-def test_microphone_audio_levels():
-    """Test microphone audio input levels."""
-    logger.info("\n" + "=" * 60)
-    logger.info("🔊 AUDIO LEVELS TEST")
-    logger.info("=" * 60)
-    logger.info("Listening for 5 seconds... Please make various sounds:\n")
-    logger.info("  1. First 2 seconds - Stay silent (baseline)")
-    logger.info("  2. Next 2 seconds - Speak normally")
-    logger.info("  3. Last 1 second - Make loud sounds\n")
-    
-    recognizer = sr.Recognizer()
-    
-    try:
-        with sr.Microphone() as source:
-            logger.info("Calibrating microphone (3 seconds)...")
-            recognizer.adjust_for_ambient_noise(source, duration=3)
-            logger.info("✅ Calibration complete\n")
-            
-            logger.info("▶️  Recording audio levels...")
-            audio = recognizer.listen(source, timeout=10, phrase_time_limit=10)
-            logger.info("⏹️  Recording complete\n")
-            
-            # Analyze audio
-            audio_array = np.frombuffer(audio.get_wav_data(), dtype=np.int16)
+    def calculate_audio_level(self, audio_data):
+        """Calculate audio level in dB from audio data."""
+        try:
+            audio_array = np.frombuffer(audio_data.get_wav_data(), dtype=np.int16)
             
             if len(audio_array) == 0:
-                logger.warning("❌ No audio data captured")
-                return False
+                return 0
             
-            # Calculate statistics
+            # Calculate RMS
             rms = np.sqrt(np.mean(audio_array ** 2))
-            db = 20 * np.log10(rms / 32768) if rms > 0 else 0
-            peak = np.max(np.abs(audio_array))
-            peak_db = 20 * np.log10(peak / 32768) if peak > 0 else 0
             
-            logger.info("📊 Audio Analysis:")
-            logger.info(f"  RMS Level: {rms:.0f} ({db:.1f} dB)")
-            logger.info(f"  Peak Level: {peak:.0f} ({peak_db:.1f} dB)")
-            logger.info(f"  Audio Duration: {len(audio_array) / audio.sample_rate:.2f} seconds")
-            logger.info(f"  Sample Rate: {audio.sample_rate} Hz\n")
+            # Convert to dB
+            if rms > 0:
+                db = 20 * np.log10(rms / 32768)
+                return max(0, db)
+            return 0
+        except Exception as e:
+            logger.warning(f"Error calculating audio level: {e}")
+            return 0
+    
+    def is_background_noise(self, audio_level):
+        """Determine if current audio is background noise."""
+        self.noise_buffer.append(audio_level)
+        
+        if len(self.noise_buffer) >= 5:
+            avg_noise = np.mean(list(self.noise_buffer))
+            return audio_level < self.noise_threshold and audio_level < (avg_noise + 5)
+        
+        return audio_level < self.noise_threshold
+    
+    def is_too_loud(self, audio_level):
+        """Check if audio is too loud (void/clipping detection)."""
+        is_loud = audio_level > self.loud_threshold
+        if is_loud:
+            logger.warning(f"⚠️  LOUD SOUND DETECTED: {audio_level:.1f} dB - Skipping segment")
+        return is_loud
+    
+    def is_silence(self, audio_level):
+        """Check if audio is silence."""
+        return audio_level < self.silence_threshold
+    
+    def transcribe_with_whisper(self, audio):
+        """Transcribe audio using OpenAI Whisper API."""
+        try:
+            # Convert audio to WAV format
+            wav_data = audio.get_wav_data()
+            audio_file = io.BytesIO(wav_data)
+            audio_file.name = "audio.wav"
             
-            # Provide recommendations
-            logger.info("📋 Recommendations:")
-            if db < 20:
-                logger.info("  ⚠️  Audio is very quiet. Check microphone volume or positioning.")
-            elif db > 60:
-                logger.info("  ⚠️  Audio is very loud. Watch for clipping/distortion.")
-            else:
-                logger.info("  ✅ Audio levels look good!")
+            logger.info("🔄 Sending to Whisper API...")
             
-            return True
-    
-    except sr.UnknownValueError:
-        logger.info("✅ Audio captured but couldn't recognize speech (that's okay for this test)")
-        return True
-    except sr.RequestError as e:
-        logger.error(f"❌ Microphone error: {e}")
-        return False
-
-
-def test_speech_recognition():
-    """Test speech recognition capability."""
-    logger.info("\n" + "=" * 60)
-    logger.info("🗣️  SPEECH RECOGNITION TEST")
-    logger.info("=" * 60)
-    logger.info("Listening for speech (5 seconds)... Say something!\n")
-    
-    recognizer = sr.Recognizer()
-    
-    try:
-        with sr.Microphone() as source:
-            recognizer.adjust_for_ambient_noise(source, duration=1)
+            # Call Whisper API
+            transcript = self.client.audio.transcriptions.create(
+                model="whisper-1",
+                file=audio_file,
+                language=self.language,
+                temperature=0.0  # More deterministic results
+            )
             
-            logger.info("▶️  Listening...")
-            audio = recognizer.listen(source, timeout=5, phrase_time_limit=5)
+            text = transcript.text.strip()
             
-            logger.info("🔄 Recognizing speech...")
-            text = recognizer.recognize_google(audio)
+            # Extract confidence if available
+            confidence = getattr(transcript, 'confidence', None)
+            if confidence:
+                self.confidence_scores.append(confidence)
             
-            logger.info(f"✅ Recognized: '{text}'")
-            logger.info("✅ Google Speech-to-Text works!\n")
-            return True
+            return text, confidence
+        
+        except Exception as e:
+            logger.error(f"❌ Whisper API error: {e}")
+            return None, 0
     
-    except sr.UnknownValueError:
-        logger.warning("❌ Could not understand the audio. Speak more clearly.")
-        return False
-    except sr.RequestError as e:
-        logger.error(f"❌ Speech recognition error: {e}")
-        logger.info("   Make sure you have an internet connection.")
-        return False
-    except sr.WaitTimeoutError:
-        logger.warning("⏱️  No speech detected. Try speaking louder.")
-        return False
-
-
-def test_audio_threshold_settings():
-    """Test recommended threshold settings."""
-    logger.info("\n" + "=" * 60)
-    logger.info("⚙️  AUDIO THRESHOLD RECOMMENDATIONS")
-    logger.info("=" * 60 + "\n")
-    
-    recognizer = sr.Recognizer()
-    
-    logger.info("Testing audio in your environment...")
-    logger.info("(5 seconds of ambient sound)\n")
-    
-    try:
-        with sr.Microphone() as source:
-            audio_samples = []
+    def detect_language(self, audio):
+        """Detect language of audio."""
+        try:
+            audio_file = io.BytesIO(audio.get_wav_data())
+            audio_file.name = "audio.wav"
             
-            for i in range(5):
-                try:
-                    logger.info(f"Sample {i + 1}/5...")
-                    recognizer.adjust_for_ambient_noise(source, duration=1)
-                    audio = recognizer.listen(source, timeout=1, phrase_time_limit=1)
+            detection = self.client.audio.transcriptions.create(
+                model="whisper-1",
+                file=audio_file
+            )
+            
+            return getattr(detection, 'language', 'unknown')
+        except Exception as e:
+            logger.warning(f"Language detection failed: {e}")
+            return None
+    
+    def listen_and_transcribe(self):
+        """Main listening loop with Whisper transcription."""
+        logger.info("🎤 Agent is ready to listen. Speak naturally...")
+        logger.info("Say 'exit' or 'quit' to stop the agent\n")
+        
+        try:
+            with self.microphone as source:
+                logger.info("Calibrating for ambient noise (3 seconds)...")
+                self.recognizer.adjust_for_ambient_noise(source, duration=3)
+                logger.info("Calibration complete. Listening...\n")
+                
+                while not self.should_exit:
+                    try:
+                        self.is_listening = True
+                        
+                        logger.info("▶️  Listening...")
+                        audio = self.recognizer.listen(
+                            source,
+                            timeout=5,
+                            phrase_time_limit=15
+                        )
+                        
+                        # Calculate audio level
+                        audio_level = self.calculate_audio_level(audio)
+                        
+                        # Intelligent audio filtering
+                        if self.is_too_loud(audio_level):
+                            logger.info("🔇 Discarding loud/distorted audio\n")
+                            continue
+                        
+                        if self.is_silence(audio_level):
+                            logger.info("🤐 Silence detected\n")
+                            continue
+                        
+                        if self.is_background_noise(audio_level):
+                            logger.info(f"🌫️  Background noise detected ({audio_level:.1f} dB) - Filtering...\n")
+                            continue
+                        
+                        # Process with Whisper
+                        logger.info(f"📊 Audio level: {audio_level:.1f} dB - Processing...")
+                        self.process_audio(audio)
+                        
+                    except sr.UnknownValueError:
+                        logger.info("❌ Could not capture audio. Please speak clearly.\n")
+                    except sr.RequestError as e:
+                        logger.error(f"❌ Microphone error: {e}\n")
+                    except sr.WaitTimeoutError:
+                        logger.info("⏱️  No speech detected within timeout\n")
                     
-                    audio_array = np.frombuffer(audio.get_wav_data(), dtype=np.int16)
-                    rms = np.sqrt(np.mean(audio_array ** 2))
-                    db = 20 * np.log10(rms / 32768) if rms > 0 else 0
-                    audio_samples.append(db)
-                
-                except:
-                    pass
-            
-            if audio_samples:
-                avg_db = np.mean(audio_samples)
-                max_db = np.max(audio_samples)
-                min_db = np.min(audio_samples)
-                
-                logger.info(f"\n📊 Ambient Audio Analysis:")
-                logger.info(f"  Average Level: {avg_db:.1f} dB")
-                logger.info(f"  Max Level: {max_db:.1f} dB")
-                logger.info(f"  Min Level: {min_db:.1f} dB\n")
-                
-                logger.info("📋 Recommended .env Settings:")
-                
-                # Calculate thresholds based on environment
-                silence_threshold = max(min_db - 10, 20)
-                noise_threshold = avg_db + 10
-                loud_threshold = max_db + 10
-                
-                logger.info(f"  SILENCE_THRESHOLD={int(silence_threshold)}")
-                logger.info(f"  NOISE_THRESHOLD={int(noise_threshold)}")
-                logger.info(f"  LOUD_THRESHOLD={int(loud_threshold)}")
-                logger.info(f"  ENERGY_THRESHOLD=4000 (default)\n")
-                
-                logger.info("Copy these values to your .env file for optimal performance.")
-                
-                return True
-            else:
-                logger.warning("Could not collect audio samples.")
-                return False
+                    time.sleep(0.5)
+        
+        except Exception as e:
+            logger.error(f"Fatal error in listening loop: {e}")
+        finally:
+            self.is_listening = False
+            logger.info("\n🛑 Agent stopped")
     
-    except Exception as e:
-        logger.error(f"Error: {e}")
-        return False
+    def process_audio(self, audio):
+        """Process and transcribe audio with Whisper."""
+        text, confidence = self.transcribe_with_whisper(audio)
+        
+        if not text:
+            logger.info("❌ Failed to transcribe audio\n")
+            return
+        
+        # Check if user wants to exit
+        if text.lower() in ['exit', 'quit', 'bye', 'goodbye', 'stop']:
+            logger.info(f"You said: '{text}'")
+            self.should_exit = True
+            return
+        
+        # Display result
+        confidence_str = f" (Confidence: {confidence:.1%})" if confidence else ""
+        logger.info(f"✅ You said: '{text}'{confidence_str}")
+        self.transcribed_text.append(text)
+        
+        # Process with AI
+        self.process_transcribed_text(text)
+        print()  # New line for readability
+    
+    def process_transcribed_text(self, text):
+        """
+        Process transcribed text with AI logic.
+        Can be extended with LLM integration.
+        """
+        text_lower = text.lower()
+        
+        # Simple intent recognition
+        if any(word in text_lower for word in ['hello', 'hi', 'hey']):
+            response = "👋 Hello! How can I assist you?"
+        elif any(word in text_lower for word in ['time', 'what time']):
+            current_time = time.strftime("%H:%M:%S")
+            response = f"⏰ Current time is {current_time}"
+        elif any(word in text_lower for word in ['thank', 'thanks']):
+            response = "😊 You're welcome!"
+        elif any(word in text_lower for word in ['help', 'assist']):
+            response = "🆘 I can help with time, greetings, and basic tasks. What do you need?"
+        else:
+            response = "🤔 I understood you. How can I help?"
+        
+        logger.info(f"Agent: {response}")
+    
+    def get_session_summary(self):
+        """Get detailed session summary."""
+        summary = {
+            'total_transcriptions': len(self.transcribed_text),
+            'average_confidence': np.mean(self.confidence_scores) if self.confidence_scores else 0,
+            'transcriptions': self.transcribed_text
+        }
+        return summary
+    
+    def start(self):
+        """Start the agent."""
+        try:
+            self.listen_and_transcribe()
+        except KeyboardInterrupt:
+            logger.info("\n\n⏹️  Agent interrupted by user")
+            self.should_exit = True
+    
+    def stop(self):
+        """Stop the agent."""
+        self.should_exit = True
+        logger.info("Agent stopping...")
 
 
 def main():
-    """Run all tests."""
-    logger.info("\n")
-    logger.info("╔" + "=" * 58 + "╗")
-    logger.info("║" + " " * 12 + "🎤 SPEECH AGENT MICROPHONE TEST 🎤" + " " * 12 + "║")
-    logger.info("╚" + "=" * 58 + "╝\n")
+    """Main entry point."""
+    try:
+        agent = WhisperSpeechAgent()
+        agent.start()
+        
+        # Print summary
+        summary = agent.get_session_summary()
+        logger.info(f"\n📋 Session Summary:")
+        logger.info(f"Total Transcriptions: {summary['total_transcriptions']}")
+        logger.info(f"Average Confidence: {summary['average_confidence']:.1%}")
+        if summary['transcriptions']:
+            logger.info(f"Transcribed Text: {' '.join(summary['transcriptions'])}")
     
-    results = {
-        "Microphone Detection": test_microphone_detection(),
-        "Audio Levels": test_microphone_audio_levels(),
-        "Speech Recognition": test_speech_recognition(),
-        "Audio Threshold Settings": test_audio_threshold_settings(),
-    }
-    
-    # Summary
-    logger.info("\n" + "=" * 60)
-    logger.info("✅ TEST SUMMARY")
-    logger.info("=" * 60 + "\n")
-    
-    for test_name, passed in results.items():
-        status = "✅ PASSED" if passed else "❌ FAILED"
-        logger.info(f"{test_name:.<45} {status}")
-    
-    all_passed = all(results.values())
-    
-    logger.info("\n" + "=" * 60)
-    if all_passed:
-        logger.info("🎉 All tests passed! You're ready to use the speech agent.")
-        logger.info("Run: python speech_agent.py")
-    else:
-        logger.info("⚠️  Some tests failed. Check the recommendations above.")
-        logger.info("Common fixes:")
-        logger.info("  1. Check microphone connections")
-        logger.info("  2. Adjust system volume")
-        logger.info("  3. Check internet connection")
-        logger.info("  4. Update audio drivers")
-    logger.info("=" * 60 + "\n")
-    
-    return all_passed
+    except ValueError as e:
+        logger.error(f"Configuration Error: {e}")
+        logger.info("Please set OPENAI_API_KEY in your .env file")
+        sys.exit(1)
+    except Exception as e:
+        logger.error(f"Error: {e}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
-    try:
-        success = main()
-        exit(0 if success else 1)
-    except KeyboardInterrupt:
-        logger.info("\n\n⏹️  Test interrupted by user")
-        exit(1)
-    except Exception as e:
-        logger.error(f"Fatal error: {e}")
-        exit(1)
+    main()
