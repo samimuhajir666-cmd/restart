@@ -1,0 +1,190 @@
+# 🚀 Quick Start Guide
+
+Get the speech agent running in 5 minutes!
+
+## Installation (3 steps)
+
+### Step 1: Install Dependencies
+
+```bash
+# Ubuntu/Debian
+sudo apt-get install python3-pyaudio python3-all-dev portaudio19-dev
+
+# macOS
+brew install portaudio
+
+# Windows - Skip this step (pre-built)
+```
+
+### Step 2: Install Python Packages
+
+```bash
+pip install -r requirements.txt
+```
+
+### Step 3: Configure Environment
+
+```bash
+# Copy the environment file
+cp .env .env.bak
+
+# Edit .env with your settings (optional, defaults work fine)
+nano .env  # or use your editor
+```
+
+## Run the Agent
+
+### Option 1: Google Speech-to-Text (Free, Good Quality)
+
+```bash
+python speech_agent.py
+```
+
+### Option 2: OpenAI Whisper (Better Accuracy, Costs Money)
+
+1. Get API key from https://platform.openai.com/api-keys
+
+2. Add to `.env`:
+```env
+OPENAI_API_KEY=sk-your-key-here
+```
+
+3. Run:
+```bash
+python speech_agent_whisper.py
+```
+
+## Your First Run
+
+```
+🎤 Agent is ready to listen. Speak naturally...
+Say 'exit' or 'quit' to stop the agent
+
+▶️  Listening...
+📊 Audio level: 52.3 dB - Processing...
+🔄 Transcribing...
+✅ You said: 'Hello'
+Agent: 👋 Hello! How can I assist you?
+
+▶️  Listening...
+```
+
+## Common Commands
+
+| Say This | Agent Does |
+|----------|-----------|
+| "Hello" | Greets you |
+| "What time is it?" | Shows current time |
+| "Thanks" | Says you're welcome |
+| "Exit" | Stops listening |
+
+## Troubleshooting Quick Fixes
+
+### Problem: "No module named 'pyaudio'"
+
+**Solution:**
+```bash
+# Ubuntu
+sudo apt-get install python3-pyaudio
+
+# macOS
+pip install --upgrade setuptools
+pip install pyaudio
+
+# Windows - Download from: https://www.lfd.uci.edu/~gohlke/pythonlibs/
+```
+
+### Problem: Microphone not working
+
+**Check if microphone is detected:**
+```bash
+python -c "import speech_recognition as sr; print(sr.Microphone.list_microphone_indexes())"
+```
+
+### Problem: Too much background noise
+
+**In `.env`, change:**
+```env
+NOISE_THRESHOLD=40  →  NOISE_THRESHOLD=50
+```
+
+### Problem: Missing quiet speech
+
+**In `.env`, change:**
+```env
+SILENCE_THRESHOLD=30  →  SILENCE_THRESHOLD=20
+```
+
+## Audio Level Guide
+
+If your microphone is:
+
+- **Too quiet**: Decrease `SILENCE_THRESHOLD` in `.env` (30 → 20)
+- **Picking up too much noise**: Increase `NOISE_THRESHOLD` (40 → 50)
+- **Cutting off loud voices**: Increase `LOUD_THRESHOLD` (70 → 80)
+- **Not detecting speech at all**: Decrease `ENERGY_THRESHOLD` (4000 → 3000)
+
+## Environment Variables Explained
+
+```env
+# These control what the agent listens to:
+
+SILENCE_THRESHOLD=30        # Anything quieter = silence (ignored)
+LOUD_THRESHOLD=70           # Anything louder = distortion (ignored)
+NOISE_THRESHOLD=40          # Background noise detection
+
+ENERGY_THRESHOLD=4000       # How sensitive to speech (lower = more sensitive)
+
+LISTEN_TIMEOUT=5            # Wait max 5 seconds for speech
+PHRASE_TIME_LIMIT=15        # Max 15 seconds per sentence
+```
+
+## Next Steps
+
+1. **Customize responses**: Edit `process_transcribed_text()` in `speech_agent.py`
+
+2. **Add your own AI**: Integrate with GPT, Claude, or other LLMs
+
+3. **Handle specific tasks**: Make the agent respond to custom commands
+
+4. **Deploy**: Run as a service or Docker container
+
+## Example Customization
+
+Add weather support:
+
+```python
+def process_transcribed_text(self, text):
+    """Custom AI logic"""
+    text_lower = text.lower()
+    
+    if "weather" in text_lower:
+        # Your weather API call here
+        response = "☀️ It's sunny today!"
+    else:
+        response = "I didn't understand"
+    
+    logger.info(f"Agent: {response}")
+```
+
+## Performance Tips
+
+- **Faster response**: Lower `LISTEN_TIMEOUT` (5 → 3)
+- **Better accuracy**: Use `speech_agent_whisper.py`
+- **Less noise**: Increase `NOISE_THRESHOLD`
+- **Better speech detection**: Lower `ENERGY_THRESHOLD`
+
+## Getting Help
+
+1. Check README.md for detailed documentation
+2. Review logs for error messages
+3. Test microphone: `python test_microphone.py`
+4. Check system audio settings
+
+## Now You're Ready! 🎉
+
+```bash
+python speech_agent.py
+```
+
+Start speaking and let the agent listen!
