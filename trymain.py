@@ -4,7 +4,6 @@ import io
 import time
 import numpy as np
 from collections import deque
-from dotenv import load_dotenv
 import speech_recognition as sr
 from openai import OpenAI
 import logging
