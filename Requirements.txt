@@ -1,7 +1,4 @@
-# 🎤 Real-Time Speech-to-Text AI Agent - Requirements
-
-# Core dependencies
-SpeechRecognition==3.10.0
-pyaudio==0.2.13
-numpy==1.24.3
-pydub==0.25.1
+SpeechRecognition
+pyaudio
+numpy
+pydub
