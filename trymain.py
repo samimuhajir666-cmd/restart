@@ -233,7 +233,7 @@ class RealTimeSpeechAgent:
         try:
             # Use Google Speech Recognition (free option)
             logger.info("🔄 Transcribing...")
-            text = self.recognizer.recognize_google(audio)
+            text = self.recognizer.recognize_google(audio, language=LANGUAGE)
             
             # Check if user wants to exit
             if text.lower() in ['exit', 'quit', 'bye', 'goodbye', 'stop']:
@@ -257,34 +257,23 @@ class RealTimeSpeechAgent:
         """
         Process transcribed text with AI agent logic.
         
-        This is where you add custom AI behavior.
-        Override this method for custom logic.
-        
         Args:
             text: Transcribed text from user
         """
-        # Simple intent detection
         text_lower = text.lower()
         
-        # ====== CUSTOMIZE AI RESPONSES HERE ======
-        
+        # ====== CUSTOMIZE RESPONSES HERE ======
         if any(word in text_lower for word in ['hello', 'hi', 'hey']):
             response = "👋 Hello! How can I help you?"
-        
         elif any(word in text_lower for word in ['time', 'what time']):
             current_time = time.strftime("%H:%M:%S")
             response = f"⏰ Current time is {current_time}"
-        
         elif any(word in text_lower for word in ['thank', 'thanks']):
             response = "😊 You're welcome!"
-        
         elif any(word in text_lower for word in ['help', 'assist']):
             response = "🆘 I can help with time, greetings, and basic tasks. What do you need?"
-        
         else:
             response = "🤔 I heard you. What would you like me to do?"
-        
-        # ==========================================
         
         logger.info(f"Agent: {response}")
     
