@@ -1,7 +1,7 @@
-streamlit==1.28.1
-streamlit-mic-recorder==0.0.8
-numpy==1.24.3
-scipy==1.11.2
-requests==2.31.0
-groq==0.4.2
-python-dotenv==1.0.0
+streamlit
+streamlit-mic-recorder
+numpy
+scipy
+requests
+groq
+python-dotenv
