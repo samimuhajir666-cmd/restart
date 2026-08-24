@@ -18,21 +18,23 @@ import os
 import re
 import numpy as np
 import requests
+import scipy.io.wavfile as wav
 import streamlit as st
 from dotenv import load_dotenv
 from groq import Groq
 from streamlit_mic_recorder import mic_recorder
 from collections import deque
-import librosa
 
 # ============================
-# 🔧 IMPORT LIBROSA (Critical Fix)
+# 🔧 SAFE LIBROSA IMPORT (FIXED)
 # ============================
 try:
     import librosa
+    LIBROSA_AVAILABLE = True
 except ImportError:
-    st.error("❌ librosa not installed. Please run: pip install librosa")
-    st.stop()
+    LIBROSA_AVAILABLE = False
+    # Fallback: use a simple energy-based VAD (will still work)
+    print("⚠️ librosa not installed. Using fallback VAD.")
 
 load_dotenv()
 
@@ -47,7 +49,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# API Keys — with safe fallback
+# API Keys — safe fallback for both .env and Streamlit secrets
 def get_api_key(var_name):
     try:
         # First try .env
@@ -57,6 +59,7 @@ def get_api_key(var_name):
         # Then try Streamlit secrets
         return st.secrets.get(var_name, None)
     except Exception:
+        # If secrets not available, just return env
         return os.getenv(var_name)
 
 DEEPGRAM_API_KEY = get_api_key("DEEPGRAM_API_KEY")
@@ -67,7 +70,7 @@ if not DEEPGRAM_API_KEY:
     st.stop()
 
 # ============================
-# 👂 VOICE ACTIVITY DETECTOR
+# 👂 VOICE ACTIVITY DETECTOR (with fallback if librosa missing)
 # ============================
 
 class VoiceActivityDetector:
@@ -76,8 +79,8 @@ class VoiceActivityDetector:
         self.frame_duration_ms = 20
         self.frame_size = int(sample_rate * self.frame_duration_ms / 1000)
         
-        self.speech_floor_db = 35  # Minimum speech level
-        self.noise_ceiling_db = 25  # Maximum noise level
+        self.speech_floor_db = 35
+        self.noise_ceiling_db = 25
         self.vad_history = deque(maxlen=30)
         
         self.noise_spectrum = None
@@ -85,22 +88,20 @@ class VoiceActivityDetector:
         self.learning_frames = 0
 
     def compute_mfcc_features(self, audio_chunk):
+        if not LIBROSA_AVAILABLE:
+            return self._compute_fallback_features(audio_chunk)
         try:
-            # Convert int16 to float32 normalized between -1.0 and 1.0 for librosa
             y_float = audio_chunk.astype(np.float32) / 32768.0
-
             mel_spec = librosa.feature.melspectrogram(
                 y=y_float,
                 sr=self.sample_rate,
                 n_mels=13
             )
-            
             mfcc = librosa.feature.mfcc(
                 y=y_float,
                 sr=self.sample_rate,
                 n_mfcc=13
             )
-            
             return {
                 'mel_energy': float(np.mean(mel_spec)),
                 'mel_variance': float(np.std(mel_spec)),
@@ -112,13 +113,10 @@ class VoiceActivityDetector:
     def _compute_fallback_features(self, audio_chunk):
         rms = np.sqrt(np.mean(audio_chunk.astype(np.float64) ** 2) + 1e-10)
         energy_db = 20 * np.log10(rms / 32768.0 + 1e-10)
-        
         zcr = np.sum(np.abs(np.diff(np.sign(audio_chunk)))) / (2 * len(audio_chunk) + 1e-10)
-        
         spectrum = np.abs(np.fft.fft(audio_chunk))
         spectrum_norm = spectrum / (np.sum(spectrum) + 1e-10)
         entropy = -np.sum(spectrum_norm * np.log2(spectrum_norm + 1e-10))
-        
         return {
             'energy': energy_db,
             'zcr': zcr,
@@ -149,7 +147,7 @@ class VoiceActivityDetector:
 
 
 # ============================
-# 🗣️ SPEAKER PRIORITIZER
+# 🗣️ SPEAKER PRIORITIZER (with fallback)
 # ============================
 
 class SpeakerPrioritizer:
@@ -160,6 +158,8 @@ class SpeakerPrioritizer:
         self.confidence_threshold = 0.6
 
     def extract_pitch_features(self, audio_chunk):
+        if not LIBROSA_AVAILABLE:
+            return None
         try:
             y_float = audio_chunk.astype(np.float64) / 32768.0
             f0 = librosa.yin(
@@ -168,7 +168,6 @@ class SpeakerPrioritizer:
                 fmax=400,
                 sr=16000
             )
-            
             voiced = f0[~np.isnan(f0)]
             if len(voiced) > 0:
                 return {
@@ -183,7 +182,6 @@ class SpeakerPrioritizer:
     def learn_speaker(self, audio_chunk):
         if self.learning_count >= self.max_learning:
             return
-        
         pitch_feat = self.extract_pitch_features(audio_chunk)
         if pitch_feat:
             if self.primary_speaker_profile is None:
@@ -201,14 +199,11 @@ class SpeakerPrioritizer:
     def is_primary_speaker(self, audio_chunk):
         if self.learning_count < 5:
             return True
-        
         pitch_feat = self.extract_pitch_features(audio_chunk)
         if not pitch_feat or not self.primary_speaker_profile:
             return True
-        
         pitch_diff = abs(pitch_feat['pitch_mean'] - self.primary_speaker_profile['pitch_mean'])
         tolerance = self.primary_speaker_profile['pitch_std'] * 2 + 1e-5
-        
         return pitch_diff < tolerance
 
 
@@ -226,7 +221,6 @@ class AdaptiveNoiseGate:
     def update_noise_floor(self, audio_chunk):
         rms = np.sqrt(np.mean(audio_chunk.astype(np.float64) ** 2) + 1e-10)
         chunk_db = 20 * np.log10(rms / 32768.0 + 1e-10)
-        
         self.noise_floor_history.append(chunk_db)
         if len(self.noise_floor_history) > 20:
             new_floor = np.percentile(list(self.noise_floor_history), 25)
@@ -235,11 +229,9 @@ class AdaptiveNoiseGate:
     def suppress(self, audio_chunk):
         rms = np.sqrt(np.mean(audio_chunk.astype(np.float64) ** 2) + 1e-10)
         chunk_db = 20 * np.log10(rms / 32768.0 + 1e-10)
-        
         if chunk_db < self.noise_floor + 5:
             attenuation = max(0.0, (self.noise_floor + 10.0 - chunk_db) / 10.0)
             return (audio_chunk.astype(np.float64) * (1.0 - attenuation * 0.7)).astype(np.int16)
-        
         return audio_chunk
 
 
@@ -260,13 +252,11 @@ class TranscriptionQualityTracker:
     def mark_unclear(self, transcription, confidences):
         if not confidences:
             return transcription
-        
         avg_conf = float(np.mean(confidences))
         if avg_conf < self.unclear_threshold:
             return f"[inaudible: {transcription}]" if transcription else "[inaudible]"
         if avg_conf < 0.6:
             return f"{transcription} [low confidence]"
-        
         return transcription
 
 
