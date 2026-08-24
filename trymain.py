@@ -18,7 +18,6 @@ import os
 import re
 import numpy as np
 import requests
-import scipy.io.wavfile as wav
 import streamlit as st
 from dotenv import load_dotenv
 from groq import Groq
