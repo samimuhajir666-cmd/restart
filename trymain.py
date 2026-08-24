@@ -18,12 +18,12 @@ import os
 import re
 import numpy as np
 import requests
-import librosa
 import streamlit as st
 from dotenv import load_dotenv
 from groq import Groq
 from streamlit_mic_recorder import mic_recorder
 from collections import deque
+import librosa
 
 # ============================
 # 🔧 IMPORT LIBROSA (Critical Fix)
