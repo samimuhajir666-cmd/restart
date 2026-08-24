@@ -1,7 +1,5 @@
 streamlit
 streamlit-mic-recorder
-numpy
-scipy
 requests
 groq
 python-dotenv
