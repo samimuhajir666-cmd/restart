@@ -18,6 +18,7 @@ import os
 import re
 import numpy as np
 import requests
+import librosa
 import streamlit as st
 from dotenv import load_dotenv
 from groq import Groq
